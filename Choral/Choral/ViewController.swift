@@ -10,78 +10,85 @@ import UIKit
 import AudioToolbox
 import AVFoundation
 
-class ViewController: UIViewController {
-    
-    var recordingSession: AVAudioSession!
-    var audioUnit: AVAudioUnit!
-    var rioUnit: AudioUnit = AudioUnit()
-    var sampleRate = 44100.0
+@objc protocol AURenderCallbackDelegate {
+    func performRender(ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+        inTimeStamp: UnsafePointer<AudioTimeStamp>,
+        inBufNumber: UInt32,
+        inNumberFrames: UInt32,
+        ioData: UnsafeMutablePointer<AudioBufferList>) -> OSStatus
+}
 
+private func AudioController_RenderCallback(inRefCon: UnsafeMutablePointer<Void>,
+    ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+    inTimeStamp: UnsafePointer<AudioTimeStamp>,
+    inBufNumber: UInt32,
+    inNumberFrames: UInt32,
+    ioData: UnsafeMutablePointer<AudioBufferList>)
+    -> OSStatus
+{
+    let delegate = unsafeBitCast(inRefCon, AURenderCallbackDelegate.self)
+    let result = delegate.performRender(ioActionFlags,
+        inTimeStamp: inTimeStamp,
+        inBufNumber: inBufNumber,
+        inNumberFrames: inNumberFrames,
+        ioData: ioData)
+    return result
+}
+
+
+class ViewController: UIViewController, AURenderCallbackDelegate {
+    
+    var sampleRate = 44100.0 //Hertz
+    let bufferDuration: NSTimeInterval = 0.005
+    var mySession: AVAudioSession!
+    var ioUnitInstance: AudioUnit = AudioUnit()
+    
+    
+    
     override func viewDidLoad() {
         super.viewDidLoad()
-        // Do any additional setup after loading the view, typically from a nib.
         setupAudioSession()
-        setupIOUnit()
+        setupAudioUnit()
         
-        let err = AudioOutputUnitStart(rioUnit)
-        
-        
+        AudioOutputUnitStart(ioUnitInstance)
     }
     
-    func startRecording() {
-        
-        
+    func performRender(
+        ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+        inTimeStamp: UnsafePointer<AudioTimeStamp>,
+        inBufNumber: UInt32,
+        inNumberFrames: UInt32,
+        ioData: UnsafeMutablePointer<AudioBufferList>) -> OSStatus
+    {
+        let err = AudioUnitRender(ioUnitInstance, ioActionFlags, inTimeStamp, 1, inNumberFrames, ioData)
+        return err;
     }
     
     func setupAudioSession() {
-        //configure audio session
-        recordingSession = AVAudioSession.sharedInstance()
+        mySession = AVAudioSession.sharedInstance()
         
         do {
-            try recordingSession.setCategory(AVAudioSessionCategoryPlayAndRecord)
-        } catch let error as NSError {
-            print(error)
-            print("Couldn't setup audio session")
-        } catch {
-            fatalError()
-        }
+            try mySession.setPreferredSampleRate(sampleRate)
+        } catch {}
         
-        // set the buffer duration to 5 ms
-        let bufferDuration: NSTimeInterval = 0.005
         do {
-            try recordingSession.setPreferredIOBufferDuration(bufferDuration)
-        } catch let error as NSError {
-            print(error)
-            print("Couldn't setup buffer duration")
-        } catch {
-            fatalError()
-        }
+            try mySession.setPreferredIOBufferDuration(bufferDuration)
+        } catch {}
         
-        // set the session's sample rate
         do {
-            try recordingSession.setPreferredSampleRate(sampleRate)
-        } catch let error as NSError {
-            print(error)
-            print("Couldn't setup sample rate")
-        } catch {
-            fatalError()
-        }
+            try mySession.setCategory(AVAudioSessionCategoryPlayAndRecord)
+        } catch {}
         
-         // activate the audio session
         do {
-            try recordingSession.setActive(true)
-        } catch let error as NSError {
-            print(error)
-            print("Couldn't activate the audio session")
-        } catch {
-            fatalError()
-        }
+            try mySession.setActive(true)
+        } catch {}
         
-        sampleRate = recordingSession.sampleRate
+        sampleRate = mySession.sampleRate
+        
+        print("setup audio session")
     }
     
-    func setupIOUnit() {
-        // Create a new instance of AURemoteIO
+    func setupAudioUnit() {
         var description = AudioComponentDescription(
             componentType: OSType(kAudioUnitType_Output),
             componentSubType: OSType(kAudioUnitSubType_RemoteIO),
@@ -89,37 +96,45 @@ class ViewController: UIViewController {
             componentFlags: 0,
             componentFlagsMask: 0)
         
-        
         let component = AudioComponentFindNext(nil, &description)
         
-        AudioComponentInstanceNew(component, &self.rioUnit)
+        AudioComponentInstanceNew(component, &ioUnitInstance)
         
-        var enableInput: UInt32         = 1;    // to enable input
-        let inputBus: AudioUnitElement = 1;
-        
-        let ioUnit: AudioUnit = AudioUnit.init()
+        var enableInput: UInt32        = 1    // to enable input
+        let inputBus: AudioUnitElement = 1
         
         AudioUnitSetProperty (
-            ioUnit,
+            ioUnitInstance,
             kAudioOutputUnitProperty_EnableIO,
             kAudioUnitScope_Input,
             inputBus,
             &enableInput,
             UInt32(strideofValue(enableInput))
-        );
+        )
         
-        //  Enable input and output on AURemoteIO
-        //  Input is enabled on the input scope of the input element
-        //  Output is enabled on the output scope of the output element
+        var enableOutput: UInt32 = 1
+        let outputBus: AudioUnitElement = 1
         
+        AudioUnitSetProperty (
+            ioUnitInstance,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Output,
+            outputBus,
+            &enableOutput,
+            UInt32(strideofValue((enableOutput)))
+        )
+        
+        var renderCallback = AURenderCallbackStruct(
+            inputProc: AudioController_RenderCallback,
+            inputProcRefCon: UnsafeMutablePointer(unsafeAddressOf(self))
+        )
+        
+        AudioUnitSetProperty(ioUnitInstance, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &renderCallback, UInt32(sizeofValue(renderCallback)))
+        
+        AudioUnitInitialize(ioUnitInstance)
+        
+        print("setup audio unit")
         
     }
-
-    override func didReceiveMemoryWarning() {
-        super.didReceiveMemoryWarning()
-        // Dispose of any resources that can be recreated.
-    }
-
-
 }
 
